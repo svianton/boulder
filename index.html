@@ -239,7 +239,12 @@ function rgb2hsv(r, g, b) {
   return [(h * 60 + 360) % 360, mx ? (d / mx) * 100 : 0, mx * 100];
 }
 function dist(h, s, v, ref) {
-  if (ref[1] < ACH) return Math.hypot((v - ref[2]) * 0.7, Math.max(s - ref[1], 0));
+  if (ref[1] < ACH || ref[2] < 30) {
+    // чёрная / серая / белая: сравниваем яркость и «цветность» (S×V) — она не шумит в тенях
+    const c = s * v / 100, rc = ref[1] * ref[2] / 100;
+    const dark = ref[2] < 30;
+    return Math.hypot((v - ref[2]) * (dark ? 1.25 : 0.7), Math.max(c - rc, 0) * (dark ? 1.6 : 1));
+  }
   const dh = Math.abs((((h - ref[0] + 180) % 360) + 360) % 360 - 180);
   const ds = Math.max(ref[1] * 0.65 - s, 0) + Math.max(s - ref[1] * 1.8, 0) * 0.3;
   return Math.hypot(dh * 0.75, ds * 0.9, (v - ref[2]) * 0.08);
@@ -326,12 +331,18 @@ function colorAt(x, y) {
     const X = x + dx, Y = y + dy;
     if (X >= 0 && Y >= 0 && X < A.w && Y < A.h) px.push(Y * A.w + X);
   }
+  const med = (arr) => { const s = arr.slice().sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+  const chroma = med(px.map((i) => A.S[i] * A.V[i] / 100)), vMed = med(px.map((i) => A.V[i]));
+  if (chroma < 7 || vMed < 22) {
+    // бесцветная или очень тёмная зацепка
+    const dark = px.slice().sort((a, b) => A.V[a] - A.V[b]).slice(0, Math.ceil(px.length * 0.6));
+    return [0, Math.min(med(dark.map((i) => A.S[i])), ACH - 1), med(dark.map((i) => A.V[i]))];
+  }
   const sats = px.map((i) => A.S[i]).sort((a, b) => a - b);
   const thr = sats[Math.floor(sats.length * 0.4)];
   const keep = px.filter((i) => A.S[i] >= thr);
   let sx = 0, sy = 0;
   for (const i of keep) { const a = A.H[i] * Math.PI / 180, w = A.S[i] + 0.01; sx += Math.cos(a) * w; sy += Math.sin(a) * w; }
-  const med = (arr) => { const s = arr.slice().sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
   return [(Math.atan2(sy, sx) * 180 / Math.PI + 360) % 360, med(keep.map((i) => A.S[i])), med(keep.map((i) => A.V[i]))];
 }
 
@@ -390,7 +401,7 @@ function findSimilar() {
   const n = A.w * A.h, ref = refColor;
   let m = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
-    if (ref[1] >= ACH && A.S[i] < ACH * 0.7) continue;
+    if (ref[1] >= ACH && ref[2] >= 30 && A.S[i] < ACH * 0.7) continue;
     if (dist(A.H[i], A.S[i], A.V[i], ref) < TOL) m[i] = 1;
   }
   // убираем шум: эрозия + дилатация 3×3
@@ -419,7 +430,17 @@ function findSimilar() {
         if (m[j] && !lab[j]) { lab[j] = 1; st.push(j); }
       }
     }
-    if (comp.length >= minA && comp.length <= maxA) found.push(hull(comp));
+    if (comp.length < minA || comp.length > maxA) continue;
+    // похоже ли пятно на зацепку: не слишком вытянутое и не «рваное» (тени, щели, полосы стены)
+    let x0 = A.w, y0 = A.h, x1 = 0, y1 = 0;
+    for (const i of comp) { const x = i % A.w, y = (i / A.w) | 0; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+    if (Math.max(bw, bh) / Math.min(bw, bh) > 4.5) continue;
+    const hd = hull(comp);
+    let area = 0; const P = hd.poly;
+    for (let a = 0, b = P.length - 1; a < P.length; b = a++) area += (P[b][0] * A.w) * (P[a][1] * A.h) - (P[a][0] * A.w) * (P[b][1] * A.h);
+    if (comp.length / (Math.abs(area) / 2) < 0.5) continue;
+    found.push(hd);
   }
   return found.filter((f) => hit(f.cx, f.cy) < 0 && routes.every((r, i) => i === cur || hit(f.cx, f.cy, r.holds) < 0));
 }
@@ -643,7 +664,7 @@ function tag(ctx, r, text, bg, fs) {
   roundRect(ctx, r.x0, r.y0, r.x1 - r.x0, h, h * 0.28); ctx.fillStyle = bg; ctx.fill();
   ctx.restore();
   roundRect(ctx, r.x0, r.y0, r.x1 - r.x0, h, h * 0.28);
-  ctx.lineWidth = Math.max(1, fs * 0.09); ctx.strokeStyle = light(bg) ? 'rgba(0,0,0,.35)' : 'rgba(255,255,255,.85)'; ctx.stroke();
+  ctx.lineWidth = Math.max(1, fs * 0.05); ctx.strokeStyle = luma(bg) < 70 ? 'rgba(255,255,255,.5)' : 'rgba(0,0,0,.2)'; ctx.stroke();
   ctx.fillStyle = light(bg) ? '#111' : '#fff';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(text, (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2 + fs * 0.05);
@@ -676,7 +697,7 @@ function draw(ctx, W, H, final) {
   oc.fillStyle = `rgba(0,0,0,${final ? 0.34 : 0.28})`; oc.fillRect(0, 0, W, H);
   oc.globalCompositeOperation = 'destination-out';
   oc.lineJoin = 'round';
-  for (const r of list) for (const hd of r.holds) { path(oc, hd, W, H); oc.fill(); oc.lineWidth = u * 6; oc.stroke(); }
+  for (const r of list) for (const hd of r.holds) { path(oc, hd, W, H); oc.fill(); oc.lineWidth = u * 4; oc.stroke(); }
   ctx.drawImage(o, 0, 0);
 
   // обводки: текущая трасса в редакторе — белая со стартом/топом, остальные — цветом своей трассы
@@ -692,8 +713,9 @@ function draw(ctx, W, H, final) {
     const c = lineColor(r, hd);
     const w = (hd.type === 'start' && !editing(r)) ? 1.35 : 1;
     path(ctx, hd, W, H);
-    ctx.lineWidth = u * 6.5 * w; ctx.strokeStyle = light(c) ? 'rgba(0,0,0,.5)' : 'rgba(255,255,255,.75)'; ctx.stroke();
-    ctx.lineWidth = u * 3.6 * w; ctx.strokeStyle = c; ctx.stroke();
+    // без белой подложки: только мягкая тень, чтобы линия читалась на стене; очень тёмным цветам — светлая
+    ctx.lineWidth = u * 3.4 * w; ctx.strokeStyle = luma(c) < 70 ? 'rgba(255,255,255,.45)' : 'rgba(0,0,0,.35)'; ctx.stroke();
+    ctx.lineWidth = u * 2 * w; ctx.strokeStyle = c; ctx.stroke();
   }
 
   // подписи: категория у старта, «ТОП» у финиша. Не закрывают зацепки.
@@ -845,6 +867,7 @@ $('make').onclick = async () => {
   show('s-done'); haptic('ok');
 };
 const pluralR = (n) => (n % 10 === 1 && n % 100 !== 11 ? 'трасса' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'трассы' : 'трасс');
+function luma(h) { const n = parseInt(h.slice(1), 16); return ((n >> 16) * 299 + ((n >> 8) & 255) * 587 + (n & 255) * 114) / 1000; }
 function light(h) { const n = parseInt(h.slice(1), 16); return ((n >> 16) * 299 + ((n >> 8) & 255) * 587 + (n & 255) * 114) / 1000 > 160; }
 function fit(ctx, t, max) { if (ctx.measureText(t).width <= max) return t; while (t.length > 1 && ctx.measureText(t + '…').width > max) t = t.slice(0, -1); return t + '…'; }
 
