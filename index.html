@@ -32,6 +32,7 @@
   --line: rgba(255, 255, 255, .1); --inv: #f2f2f2; --inv-text: #111; color-scheme: dark;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; }
 body {
   background: var(--bg); color: var(--text);
@@ -102,6 +103,11 @@ button:disabled { opacity: .35; cursor: default; }
 .sw.on { box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--text); }
 .input { width: 100%; height: 46px; border-radius: 12px; border: 0; padding: 0 14px; background: var(--surface); color: var(--text); box-shadow: inset 0 0 0 1px var(--line); font: inherit; outline: none; margin-bottom: 18px; }
 .input:focus { box-shadow: inset 0 0 0 2px var(--text); }
+.link-btn { display: block; margin: 14px auto 0; color: var(--muted); font-weight: 700; font-size: 14px; }
+.strip { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.strip::-webkit-scrollbar { display: none; }
+.chip { flex-shrink: 0; height: 32px; min-width: 44px; padding: 0 10px; border-radius: 9px; font-weight: 800; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; box-shadow: inset 0 0 0 1px var(--line); background: var(--surface); }
+.chip.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--text); }
 
 /* ---- результат ---- */
 #s-done { padding: 12px 12px calc(14px + env(safe-area-inset-bottom)); gap: 12px; }
@@ -142,6 +148,7 @@ button:disabled { opacity: .35; cursor: default; }
     <div class="stage-inner" id="inner"><canvas id="view"></canvas><div class="busy" id="busy"><div class="spin"></div></div></div>
   </div>
   <div class="dock">
+    <div class="strip" id="strip" hidden></div>
     <div class="hint" id="hint">Тапните по зацепке</div>
     <div class="tools">
       <button class="tool on" data-t="hold"><i></i>Зацепка</button>
@@ -160,7 +167,7 @@ button:disabled { opacity: .35; cursor: default; }
   <img id="out" alt="Готовая трасса">
   <button class="btn btn-main btn-wide" id="send">Отправить в чат</button>
   <div class="row">
-    <button class="btn btn-soft" id="again">Ещё трасса</button>
+    <button class="btn btn-soft" id="again">Изменить</button>
     <button class="btn btn-soft" id="newphoto">Новое фото</button>
   </div>
 </section>
@@ -175,7 +182,11 @@ button:disabled { opacity: .35; cursor: default; }
     <div class="colors" id="colors"></div>
     <div class="label">Сектор или название</div>
     <input class="input" id="title" maxlength="40" placeholder="Необязательно" autocomplete="off">
-    <button class="btn btn-main btn-wide" id="make">Готово</button>
+    <div class="row">
+      <button class="btn btn-soft" id="more">+ Ещё трасса</button>
+      <button class="btn btn-main" id="make">Готово</button>
+    </div>
+    <button class="link-btn" id="del">Удалить эту трассу</button>
   </div>
 </div>
 
@@ -254,11 +265,17 @@ function nearestColor(ref) {
 /* ================= Состояние ================= */
 const A = { w: 0, h: 0, H: null, S: null, V: null }; // анализ на уменьшенной копии
 let img = null;            // исходное фото (HTMLImageElement)
-let holds = [];            // {poly:[[x,y]..] норм., cx, cy, r, type:'hold'|'start'|'top'}
+let routes = [];           // трассы на фото: {holds, grade, color:[имя, hex], ref}
+let cur = 0;               // какая трасса сейчас размечается
+let holds = [];            // зацепки текущей трассы: {poly:[[x,y]..] норм., cx, cy, r, type:'hold'|'start'|'top'}
 let history = [];
 let tool = 'hold';
-let refColor = null;       // цвет первой зацепки — для «найти такие же»
-const meta = { grade: '', color: null, title: '' };
+let refColor = null;       // цвет первой зацепки текущей трассы — для «найти такие же»
+const meta = { title: '' };
+const R = () => routes[cur];
+const newRoute = () => ({ holds: [], grade: '', color: null, ref: null });
+function useRoute(i) { cur = i; holds = routes[i].holds; refColor = routes[i].ref; history = []; tool = 'hold'; syncTools(); }
+function syncCur() { if (routes[cur]) { routes[cur].holds = holds; routes[cur].ref = refColor; } }
 
 /* ================= Загрузка фото ================= */
 $('pick').onclick = () => $('file').click();
@@ -276,7 +293,7 @@ function load(file) {
     const cx = c.getContext('2d', { willReadFrequently: true });
     cx.drawImage(im, 0, 0, A.w, A.h);
     analyse(cx.getImageData(0, 0, A.w, A.h).data);
-    resetRoute(true);
+    resetRoute();
     show('s-edit');
     layout();
   };
@@ -404,14 +421,14 @@ function findSimilar() {
     }
     if (comp.length >= minA && comp.length <= maxA) found.push(hull(comp));
   }
-  return found.filter((f) => hit(f.cx, f.cy) < 0);
+  return found.filter((f) => hit(f.cx, f.cy) < 0 && routes.every((r, i) => i === cur || hit(f.cx, f.cy, r.holds) < 0));
 }
 
-function hit(nx, ny) {
+function hit(nx, ny, list = holds) {
   // самая маленькая зацепка под пальцем (с небольшим запасом)
   let best = -1, br = Infinity;
   const ar = A.w / A.h;
-  holds.forEach((hd, k) => {
+  list.forEach((hd, k) => {
     let inside = false;
     const p = hd.poly;
     for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
@@ -426,11 +443,9 @@ function hit(nx, ny) {
 /* ================= Разметка: тапы ================= */
 const snap = () => { history.push(JSON.stringify(holds)); if (history.length > 40) history.shift(); };
 
-function resetRoute(full) {
-  holds = []; history = []; refColor = null; tool = 'hold';
-  if (full) { meta.grade = ''; meta.color = null; meta.title = ''; }
-  else { meta.grade = ''; meta.color = null; }
-  syncTools(); refresh();
+function resetRoute() {
+  routes = [newRoute()]; meta.title = '';
+  useRoute(0); refresh();
 }
 
 function onTap(clientX, clientY) {
@@ -479,7 +494,7 @@ function applyView(redraw) {
 const stage = $('stage');
 const local = (e) => { const r = stage.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
 stage.addEventListener('pointerdown', (e) => {
-  stage.setPointerCapture(e.pointerId);
+  try { stage.setPointerCapture(e.pointerId); } catch (_) {}
   pts.set(e.pointerId, local(e));
   if (pts.size === 1) g = { tap: true, x0: e.clientX, y0: e.clientY, last: local(e) };
   if (pts.size === 2) {
@@ -571,10 +586,15 @@ function layout() {
 }
 
 function refresh() {
-  $('count').textContent = holds.length ? `${holds.length} ${plural(holds.length)}` : '';
+  syncCur();
+  const multi = routes.length > 1;
+  $('count').textContent = (multi ? `Трасса ${cur + 1}` + (holds.length ? ' · ' : '') : '') + (holds.length ? `${holds.length} ${plural(holds.length)}` : '');
+  renderStrip();
   $('undo').disabled = !history.length;
   $('similar').disabled = !refColor;
-  $('next').disabled = !holds.length;
+  const finishOnly = !holds.length && routes.some((r, i) => i !== cur && r.holds.length);
+  $('next').disabled = !holds.length && !finishOnly;
+  $('next').textContent = finishOnly ? 'Готово' : 'Дальше';
   if (img && $('s-edit').classList.contains('on')) { const cv = $('view'); draw(cv.getContext('2d'), cv.width, cv.height, false); }
 }
 const plural = (n) => (n % 10 === 1 && n % 100 !== 11 ? 'зацепка' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'зацепки' : 'зацепок');
@@ -586,84 +606,207 @@ function path(ctx, hd, W, H) {
   ctx.closePath();
 }
 
+function bbox(hd, W, H) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of hd.poly) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  return { x0: x0 * W, y0: y0 * H, x1: x1 * W, y1: y1 * H };
+}
+const union = (bs) => bs.reduce((a, b) => ({ x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0), x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1) }));
+const overlap = (a, b) => Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0)) * Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0));
+
+// Место для подписи рядом с зацепкой, где она не закрывает другие зацепки и подписи
+function place(anchor, w, h, obstacles, W, H, gap) {
+  const ax = (anchor.x0 + anchor.x1) / 2, ay = (anchor.y0 + anchor.y1) / 2;
+  let best = null, bestScore = Infinity;
+  [1, 2.2, 3.6, 5.2].forEach((m, ring) => {
+    const g = gap * m;
+    const c = [
+      [ax - w / 2, anchor.y0 - g - h], [anchor.x1 + g, ay - h / 2], [anchor.x0 - g - w, ay - h / 2], [ax - w / 2, anchor.y1 + g],
+      [anchor.x1 + g, anchor.y0 - g - h], [anchor.x0 - g - w, anchor.y0 - g - h], [anchor.x1 + g, anchor.y1 + g], [anchor.x0 - g - w, anchor.y1 + g],
+    ];
+    c.forEach(([x, y], k) => {
+      x = Math.min(Math.max(x, 4), W - w - 4); y = Math.min(Math.max(y, 4), H - h - 4);
+      const r = { x0: x, y0: y, x1: x + w, y1: y + h };
+      let ov = 0; for (const o of obstacles) ov += overlap(r, o);
+      ov += overlap(r, anchor) * 4;
+      const score = ov * 1000 + ring * 10 + k;
+      if (score < bestScore) { bestScore = score; best = r; }
+    });
+  });
+  return best;
+}
+
+function tag(ctx, r, text, bg, fs) {
+  const h = r.y1 - r.y0;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,.35)'; ctx.shadowBlur = fs * 0.4; ctx.shadowOffsetY = fs * 0.08;
+  roundRect(ctx, r.x0, r.y0, r.x1 - r.x0, h, h * 0.28); ctx.fillStyle = bg; ctx.fill();
+  ctx.restore();
+  roundRect(ctx, r.x0, r.y0, r.x1 - r.x0, h, h * 0.28);
+  ctx.lineWidth = Math.max(1, fs * 0.09); ctx.strokeStyle = light(bg) ? 'rgba(0,0,0,.35)' : 'rgba(255,255,255,.85)'; ctx.stroke();
+  ctx.fillStyle = light(bg) ? '#111' : '#fff';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2 + fs * 0.05);
+}
+
+function leader(ctx, r, anchor, color, u) {
+  // тонкая линия от далёкой подписи к зацепке
+  const cx = (r.x0 + r.x1) / 2, cy = (r.y0 + r.y1) / 2;
+  const ax = Math.min(Math.max(cx, anchor.x0), anchor.x1), ay = Math.min(Math.max(cy, anchor.y0), anchor.y1);
+  const px = Math.min(Math.max(ax, r.x0), r.x1), py = Math.min(Math.max(ay, r.y0), r.y1);
+  if (Math.hypot(ax - px, ay - py) < u * 14) return;
+  ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(ax, ay);
+  ctx.lineCap = 'round';
+  ctx.lineWidth = u * 4.5; ctx.strokeStyle = 'rgba(0,0,0,.4)'; ctx.stroke();
+  ctx.lineWidth = u * 2.2; ctx.strokeStyle = color; ctx.stroke();
+}
+
 function draw(ctx, W, H, final) {
   ctx.clearRect(0, 0, W, H);
   ctx.drawImage(img, 0, 0, W, H);
-  if (!holds.length) return;
-  const u = Math.max(W, H) / 1000 / (final ? 1 : V.s); // единица толщины (тоньше при зуме)
+  const list = routes.map((r, i) => ({ ...r, i, holds: i === cur ? holds : r.holds })).filter((r) => r.holds.length);
+  if (!list.length) return;
+  const multi = routes.filter((r) => r.holds.length).length > 1;
+  const zs = final ? 1 : V.s;
+  const u = Math.max(W, H) / 1000 / zs; // единица толщины (тоньше при зуме)
 
-  // затемняем всё, кроме зацепок трассы
+  // лёгкое затемнение всего, кроме отмеченных зацепок
   const o = document.createElement('canvas'); o.width = W; o.height = H;
   const oc = o.getContext('2d');
-  oc.fillStyle = `rgba(0,0,0,${final ? 0.62 : 0.5})`; oc.fillRect(0, 0, W, H);
+  oc.fillStyle = `rgba(0,0,0,${final ? 0.34 : 0.28})`; oc.fillRect(0, 0, W, H);
   oc.globalCompositeOperation = 'destination-out';
   oc.lineJoin = 'round';
-  for (const hd of holds) { path(oc, hd, W, H); oc.fill(); oc.lineWidth = u * 6; oc.stroke(); }
+  for (const r of list) for (const hd of r.holds) { path(oc, hd, W, H); oc.fill(); oc.lineWidth = u * 6; oc.stroke(); }
   ctx.drawImage(o, 0, 0);
 
+  // обводки: текущая трасса в редакторе — белая со стартом/топом, остальные — цветом своей трассы
+  const editing = (r) => !final && r.i === cur;
+  const lineColor = (r, hd) => {
+    if (editing(r)) return hd.type === 'start' ? '#22c55e' : hd.type === 'top' ? '#facc15' : '#ffffff';
+    if (!multi && final) return '#ffffff';
+    return r.color ? r.color[1] : '#ffffff';
+  };
   ctx.lineJoin = 'round';
-  for (const hd of holds) {
-    const c = hd.type === 'start' ? '#22c55e' : hd.type === 'top' ? '#facc15' : '#ffffff';
+  const order = list.slice().sort((a, b) => (editing(a) ? 1 : 0) - (editing(b) ? 1 : 0));
+  for (const r of order) for (const hd of r.holds) {
+    const c = lineColor(r, hd);
+    const w = (hd.type === 'start' && !editing(r)) ? 1.35 : 1;
     path(ctx, hd, W, H);
-    ctx.lineWidth = u * 6.5; ctx.strokeStyle = 'rgba(0,0,0,.45)'; ctx.stroke();
-    ctx.lineWidth = u * 3.6; ctx.strokeStyle = c; ctx.stroke();
+    ctx.lineWidth = u * 6.5 * w; ctx.strokeStyle = light(c) ? 'rgba(0,0,0,.5)' : 'rgba(255,255,255,.75)'; ctx.stroke();
+    ctx.lineWidth = u * 3.6 * w; ctx.strokeStyle = c; ctx.stroke();
   }
-  // подписи СТАРТ / ТОП
-  const fs = Math.max(W, H) * 0.019 / (final ? 1 : Math.sqrt(V.s));
+
+  // подписи: категория у старта, «ТОП» у финиша. Не закрывают зацепки.
+  const fs = Math.max(W, H) * (final ? 0.024 : 0.021) / (final ? 1 : Math.sqrt(zs));
   ctx.font = `800 ${fs}px Manrope, system-ui, sans-serif`;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  for (const hd of holds) {
-    if (hd.type === 'hold') continue;
-    const t = hd.type === 'start' ? 'СТАРТ' : 'ТОП';
-    let top = Infinity; for (const [, y] of hd.poly) top = Math.min(top, y);
-    const tw = ctx.measureText(t).width + fs * 0.9, th = fs * 1.5;
-    let x = hd.cx * W, y = top * H - th * 0.75;
-    if (y - th / 2 < 4) { let b = 0; for (const [, yy] of hd.poly) b = Math.max(b, yy); y = b * H + th * 0.75; }
-    x = Math.min(Math.max(x, tw / 2 + 4), W - tw / 2 - 4);
-    ctx.fillStyle = hd.type === 'start' ? '#22c55e' : '#facc15';
-    roundRect(ctx, x - tw / 2, y - th / 2, tw, th, th * 0.3); ctx.fill();
-    ctx.fillStyle = '#111'; ctx.fillText(t, x, y + fs * 0.05);
+  const obstacles = [];
+  for (const r of list) for (const hd of r.holds) { const b = bbox(hd, W, H); obstacles.push({ x0: b.x0 - u * 4, y0: b.y0 - u * 4, x1: b.x1 + u * 4, y1: b.y1 + u * 4 }); }
+  const th = fs * 1.5, gap = fs * 0.35;
+  const labels = [];
+  for (const r of order) {
+    const starts = r.holds.filter((h) => h.type === 'start');
+    const anchorS = starts.length ? union(starts.map((h) => bbox(h, W, H))) : bbox(r.holds.reduce((a, b) => (b.cy > a.cy ? b : a)), W, H);
+    const top = r.holds.find((h) => h.type === 'top');
+    const items = [];
+    if (editing(r)) {
+      if (starts.length) items.push({ text: 'СТАРТ', bg: '#22c55e', anchor: anchorS });
+      if (top) items.push({ text: 'ТОП', bg: '#facc15', anchor: bbox(top, W, H) });
+      if (r.grade && r.color) items.push({ text: r.grade, bg: r.color[1], anchor: anchorS });
+    } else {
+      const bg = r.color ? r.color[1] : '#ffffff';
+      if (r.grade) items.push({ text: r.grade, bg, anchor: anchorS });
+      if (top) items.push({ text: 'ТОП', bg, anchor: bbox(top, W, H), small: true });
+    }
+    for (const it of items) {
+      const f = it.small ? fs * 0.78 : fs;
+      ctx.font = `800 ${f}px Manrope, system-ui, sans-serif`;
+      const w = Math.max(ctx.measureText(it.text).width + f * 0.9, f * 1.9), h = it.small ? th * 0.8 : th;
+      const rect = place(it.anchor, w, h, obstacles.concat(labels.map((l) => l.rect)), W, H, gap);
+      labels.push({ ...it, rect, f });
+    }
   }
+  for (const l of labels) leader(ctx, l.rect, l.anchor, l.bg, u);
+  for (const l of labels) { ctx.font = `800 ${l.f}px Manrope, system-ui, sans-serif`; tag(ctx, l.rect, l.text, l.bg, l.f); }
 }
 function roundRect(c, x, y, w, h, r) { c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r); c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath(); }
 
 /* ================= Параметры трассы ================= */
+function renderStrip() {
+  const st = $('strip');
+  st.hidden = routes.length < 2;
+  if (st.hidden) return;
+  st.innerHTML = '';
+  routes.forEach((r, i) => {
+    const b = document.createElement('button');
+    b.className = 'chip' + (i === cur ? ' on' : '');
+    b.textContent = r.grade || `${i + 1}`;
+    if (r.color) { b.style.background = r.color[1]; b.style.color = light(r.color[1]) ? '#111' : '#fff'; }
+    b.onclick = () => { if (i === cur) return; syncCur(); useRoute(i); refresh(); };
+    st.append(b);
+  });
+}
+
 $('next').onclick = () => {
-  if (!meta.color && refColor) meta.color = nearestColor(refColor);
+  if (!holds.length) return $('make').onclick(); // новая пустая трасса — значит, всё размечено
+  if (!R().color && refColor) R().color = nearestColor(refColor);
   buildSheet();
   $('sheet-bg').classList.add('on');
 };
-$('sheet-bg').onclick = (e) => { if (e.target.id === 'sheet-bg') $('sheet-bg').classList.remove('on'); };
+$('sheet-bg').onclick = (e) => { if (e.target.id === 'sheet-bg') { $('sheet-bg').classList.remove('on'); refresh(); } };
 
 function buildSheet() {
+  const r = R();
   $('grades').innerHTML = '';
   for (const g of CONFIG.grades) {
     const b = document.createElement('button');
-    b.className = 'grade' + (meta.grade === g ? ' on' : ''); b.textContent = g;
-    b.onclick = () => { meta.grade = g; haptic(); buildSheet(); };
+    b.className = 'grade' + (r.grade === g ? ' on' : ''); b.textContent = g;
+    b.onclick = () => { r.grade = g; haptic(); buildSheet(); };
     $('grades').append(b);
   }
   $('colors').innerHTML = '';
   for (const c of CONFIG.colors) {
     const b = document.createElement('button');
-    b.className = 'sw' + (meta.color && meta.color[0] === c[0] ? ' on' : ''); b.style.background = c[1]; b.title = c[0];
+    b.className = 'sw' + (r.color && r.color[0] === c[0] ? ' on' : ''); b.style.background = c[1]; b.title = c[0];
     b.setAttribute('aria-label', c[0]);
-    b.onclick = () => { meta.color = c; haptic(); buildSheet(); };
+    b.onclick = () => { r.color = c; haptic(); buildSheet(); };
     $('colors').append(b);
   }
   $('title').value = meta.title;
-  $('make').disabled = !meta.grade || !meta.color;
+  const ok = !!(r.grade && r.color);
+  $('make').disabled = !ok; $('more').disabled = !ok;
+  $('del').hidden = routes.length < 2;
 }
 $('title').oninput = (e) => { meta.title = e.target.value; };
+
+$('more').onclick = () => {
+  syncCur();
+  routes.push(newRoute());
+  useRoute(routes.length - 1);
+  $('sheet-bg').classList.remove('on');
+  refresh();
+  toast(`Трасса ${routes.length}: тапните по её зацепке`);
+};
+$('del').onclick = () => {
+  routes.splice(cur, 1);
+  useRoute(Math.max(0, cur - 1));
+  $('sheet-bg').classList.remove('on');
+  refresh();
+};
 
 /* ================= Итоговая картинка ================= */
 let outBlob = null;
 $('make').onclick = async () => {
   $('sheet-bg').classList.remove('on');
+  syncCur();
+  // пустые трассы не печатаем, трассы без категории — не даём
+  routes = routes.filter((r) => r.holds.length);
+  const bad = routes.findIndex((r) => !r.grade || !r.color);
+  if (bad >= 0) { useRoute(bad); refresh(); buildSheet(); $('sheet-bg').classList.add('on'); return toast(`Укажите категорию для трассы ${bad + 1}`); }
+  useRoute(Math.min(cur, routes.length - 1));
   try { await document.fonts.load('800 40px Manrope'); } catch (e) {}
-  const k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+  const k = Math.min(1, 2048 / Math.max(img.naturalWidth, img.naturalHeight));
   const W = Math.round(img.naturalWidth * k), H = Math.round(img.naturalHeight * k);
-  const band = Math.round(Math.max(W * 0.16, 150));
+  const band = Math.round(Math.max(Math.min(W, H * 1.2) * 0.14, 150));
   const c = document.createElement('canvas'); c.width = W; c.height = H + band;
   const ctx = c.getContext('2d');
   draw(ctx, W, H, true);
@@ -671,24 +814,29 @@ $('make').onclick = async () => {
   // плашка снизу
   ctx.fillStyle = '#111'; ctx.fillRect(0, H, W, band);
   const pad = band * 0.2, tagH = band * 0.6, cy = H + band / 2;
-  ctx.font = `800 ${tagH * 0.58}px Manrope, system-ui, sans-serif`;
-  const tagW = Math.max(tagH * 1.35, ctx.measureText(meta.grade).width + tagH * 0.6);
-  ctx.fillStyle = meta.color[1];
-  roundRect(ctx, pad, cy - tagH / 2, tagW, tagH, tagH * 0.22); ctx.fill();
-  ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.stroke();
-  ctx.fillStyle = light(meta.color[1]) ? '#111' : '#fff';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(meta.grade, pad + tagW / 2, cy + tagH * 0.03);
-
-  const tx = pad * 2 + tagW;
-  ctx.textAlign = 'left';
+  const d = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+  let tx = pad;
+  if (routes.length === 1) {
+    const r = routes[0];
+    ctx.font = `800 ${tagH * 0.58}px Manrope, system-ui, sans-serif`;
+    const tagW = Math.max(tagH * 1.35, ctx.measureText(r.grade).width + tagH * 0.6);
+    ctx.fillStyle = r.color[1];
+    roundRect(ctx, pad, cy - tagH / 2, tagW, tagH, tagH * 0.22); ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.stroke();
+    ctx.fillStyle = light(r.color[1]) ? '#111' : '#fff';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(r.grade, pad + tagW / 2, cy + tagH * 0.03);
+    tx = pad * 2 + tagW;
+  }
+  const one = routes.length === 1;
+  const head = meta.title.trim() || (one ? routes[0].color[0] + ' трасса' : 'Новые трассы');
+  const sub = [one ? (meta.title.trim() ? routes[0].color[0] : '') : `${routes.length} ${pluralR(routes.length)}`, d, CONFIG.gym].filter(Boolean).join(' · ');
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   ctx.fillStyle = '#fff';
   ctx.font = `800 ${band * 0.22}px Manrope, system-ui, sans-serif`;
-  ctx.fillText(fit(ctx, meta.title.trim() || meta.color[0] + ' трасса', W - tx - pad), tx, cy - band * 0.12);
+  ctx.fillText(fit(ctx, head, W - tx - pad), tx, cy - band * 0.12);
   ctx.fillStyle = 'rgba(255,255,255,.6)';
   ctx.font = `700 ${band * 0.15}px Manrope, system-ui, sans-serif`;
-  const d = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
-  const sub = [meta.title.trim() ? meta.color[0] : '', d, CONFIG.gym].filter(Boolean).join(' · ');
   ctx.fillText(fit(ctx, sub, W - tx - pad), tx, cy + band * 0.17);
 
   outBlob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.9));
@@ -696,11 +844,12 @@ $('make').onclick = async () => {
   $('send').textContent = inTg && CONFIG.api ? 'Отправить в чат' : 'Отправить';
   show('s-done'); haptic('ok');
 };
+const pluralR = (n) => (n % 10 === 1 && n % 100 !== 11 ? 'трасса' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'трассы' : 'трасс');
 function light(h) { const n = parseInt(h.slice(1), 16); return ((n >> 16) * 299 + ((n >> 8) & 255) * 587 + (n & 255) * 114) / 1000 > 160; }
 function fit(ctx, t, max) { if (ctx.measureText(t).width <= max) return t; while (t.length > 1 && ctx.measureText(t + '…').width > max) t = t.slice(0, -1); return t + '…'; }
 
 /* ================= Отправка ================= */
-const caption = () => [meta.grade, meta.title.trim() || meta.color[0]].join(' · ');
+const caption = () => routes.length === 1 ? [routes[0].grade, meta.title.trim() || routes[0].color[0]].join(' · ') : (meta.title.trim() || 'Новые трассы') + ': ' + routes.map((r) => r.grade).join(', ');
 $('send').onclick = async () => {
   const btn = $('send');
   // 1) Telegram: бот присылает фото и открывает выбор чата
@@ -722,7 +871,7 @@ $('send').onclick = async () => {
     return;
   }
   // 2) Системное «Поделиться» (телефон)
-  const file = new File([outBlob], `трасса-${meta.grade}.jpg`, { type: 'image/jpeg' });
+  const file = new File([outBlob], 'трассы.jpg', { type: 'image/jpeg' });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
     try { await navigator.share({ files: [file] }); return; }
     catch (e) { if (e.name === 'AbortError') return; }
@@ -736,7 +885,7 @@ function openViewer() {
 }
 $('viewer').onclick = (e) => { if (e.target.id !== 'viewer-img') $('viewer').classList.remove('on'); };
 
-$('again').onclick = () => { resetRoute(false); show('s-edit'); layout(); };
+$('again').onclick = () => { show('s-edit'); layout(); };
 </script>
 </body>
 </html>
