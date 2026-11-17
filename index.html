@@ -622,8 +622,17 @@ const plural = (n) => (n % 10 === 1 && n % 100 !== 11 ? 'зацепка' : n % 1
 
 /* ================= Рисование ================= */
 function path(ctx, hd, W, H) {
+  // плавный контур: кривые через середины сторон — углы скруглены
+  const P = hd.poly.map(([x, y]) => [x * W, y * H]), n = P.length;
   ctx.beginPath();
-  hd.poly.forEach(([x, y], i) => (i ? ctx.lineTo(x * W, y * H) : ctx.moveTo(x * W, y * H)));
+  if (n < 3) { ctx.closePath(); return; }
+  const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  const m0 = mid(P[n - 1], P[0]);
+  ctx.moveTo(m0[0], m0[1]);
+  for (let i = 0; i < n; i++) {
+    const m = mid(P[i], P[(i + 1) % n]);
+    ctx.quadraticCurveTo(P[i][0], P[i][1], m[0], m[1]);
+  }
   ctx.closePath();
 }
 
