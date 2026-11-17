@@ -368,7 +368,7 @@ function grow(x0, y0, ref) {
   return pts.length >= 25 ? pts : null;
 }
 
-function hull(idx) {
+function hull(idx, padded = true) {
   // выпуклая оболочка по граничным точкам региона + небольшой отступ
   const P = idx.map((i) => [i % A.w, (i / A.w) | 0]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
@@ -377,7 +377,7 @@ function hull(idx) {
   for (let i = P.length - 1; i >= 0; i--) { const p = P[i]; while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); }
   const H = lo.slice(0, -1).concat(up.slice(0, -1));
   let cx = 0, cy = 0; for (const [x, y] of P) { cx += x; cy += y; } cx /= P.length; cy /= P.length;
-  const pad = Math.max(2, Math.min(A.w, A.h) * 0.004);
+  const pad = padded ? Math.max(4, Math.min(A.w, A.h) * 0.009) : 0; // отступ линии от зацепки, чтобы не закрывать мелкие
   const poly = H.map(([x, y]) => { const dx = x - cx, dy = y - cy, l = Math.hypot(dx, dy) || 1; return [(x + dx / l * pad) / A.w, (y + dy / l * pad) / A.h]; });
   const r = Math.sqrt(P.length / Math.PI) / A.w;
   return { poly, cx: cx / A.w, cy: cy / A.h, r };
@@ -437,7 +437,7 @@ function findSimilar() {
     const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
     if (Math.max(bw, bh) / Math.min(bw, bh) > 4.5) continue;
     const hd = hull(comp);
-    let area = 0; const P = hd.poly;
+    let area = 0; const P = hull(comp, false).poly;
     for (let a = 0, b = P.length - 1; a < P.length; b = a++) area += (P[b][0] * A.w) * (P[a][1] * A.h) - (P[a][0] * A.w) * (P[b][1] * A.h);
     if (comp.length / (Math.abs(area) / 2) < 0.5) continue;
     found.push(hd);
