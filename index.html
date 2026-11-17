@@ -45,7 +45,7 @@ button:disabled { opacity: .35; cursor: default; }
 
 /* ---- старт ---- */
 #s-start { justify-content: center; align-items: center; padding: 24px 16px; gap: 28px; text-align: center; }
-.logo { width: 64px; height: 64px; }
+.logo { width: 88px; height: 88px; }
 #s-start h1 { margin: 0; font-size: 26px; font-weight: 800; letter-spacing: -.02em; }
 #s-start p { margin: 6px 0 0; color: var(--muted); }
 
@@ -67,8 +67,8 @@ button:disabled { opacity: .35; cursor: default; }
 .icon-btn svg { width: 22px; height: 22px; }
 .counter { font-weight: 800; font-variant-numeric: tabular-nums; color: var(--muted); padding: 0 6px; }
 
-.stage { flex: 1; overflow: auto; position: relative; background: #000; }
-.stage-inner { position: relative; margin: 0 auto; touch-action: pan-x pan-y; }
+.stage { flex: 1; overflow: hidden; position: relative; background: #000; touch-action: none; }
+.stage-inner { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 .stage canvas { display: block; width: 100%; height: 100%; }
 .busy { position: absolute; inset: 0; display: none; place-items: center; background: rgba(0,0,0,.25); }
 .busy.on { display: grid; }
@@ -119,13 +119,9 @@ button:disabled { opacity: .35; cursor: default; }
 
 <!-- 1. Старт -->
 <section class="screen on" id="s-start">
-  <svg class="logo" viewBox="0 0 64 64" fill="none" aria-hidden="true">
-    <rect width="64" height="64" rx="18" fill="currentColor" opacity=".06"/>
-    <path d="M20 46c3-8 8-9 8-16s-3-9 1-14" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
-    <circle cx="29" cy="16" r="5" stroke="currentColor" stroke-width="3"/>
-    <circle cx="28" cy="30" r="4" stroke="currentColor" stroke-width="3"/>
-    <circle cx="20" cy="46" r="4.5" fill="#22c55e"/>
-    <circle cx="42" cy="38" r="4" stroke="currentColor" stroke-width="3"/>
+  <svg class="logo" viewBox="0 0 640 640" aria-hidden="true">
+    <rect width="640" height="640" rx="150" fill="#141414"/>
+    <path transform="translate(20 -18.75)" d="M150 380 C 200 270, 270 270, 300 340 S 400 410, 450 290" fill="none" stroke="#ff6a2b" stroke-width="78" stroke-linecap="round"/>
   </svg>
   <div>
     <h1>Разметка трасс</h1>
@@ -140,7 +136,6 @@ button:disabled { opacity: .35; cursor: default; }
   <div class="topbar">
     <button class="icon-btn" id="close" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
     <div class="grow"><span class="counter" id="count">0</span></div>
-    <button class="icon-btn" id="zoom" aria-label="Увеличить"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M11 8v6M8 11h6"/></svg></button>
     <button class="icon-btn" id="undo" aria-label="Отменить" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5M4 9h11a5 5 0 0 1 0 10h-3"/></svg></button>
   </div>
   <div class="stage" id="stage">
@@ -263,7 +258,6 @@ let holds = [];            // {poly:[[x,y]..] норм., cx, cy, r, type:'hold'|
 let history = [];
 let tool = 'hold';
 let refColor = null;       // цвет первой зацепки — для «найти такие же»
-let zoom = 1;
 const meta = { grade: '', color: null, title: '' };
 
 /* ================= Загрузка фото ================= */
@@ -436,13 +430,13 @@ function resetRoute(full) {
   holds = []; history = []; refColor = null; tool = 'hold';
   if (full) { meta.grade = ''; meta.color = null; meta.title = ''; }
   else { meta.grade = ''; meta.color = null; }
-  zoom = 1;
   syncTools(); refresh();
 }
 
-$('view').addEventListener('click', (e) => {
-  const r = e.currentTarget.getBoundingClientRect();
-  const nx = (e.clientX - r.left) / r.width, ny = (e.clientY - r.top) / r.height;
+function onTap(clientX, clientY) {
+  const r = $('view').getBoundingClientRect();
+  const nx = (clientX - r.left) / r.width, ny = (clientY - r.top) / r.height;
+  if (nx < 0 || ny < 0 || nx > 1 || ny > 1) return;
   const k = hit(nx, ny);
   snap(); haptic();
   if (tool === 'hold') {
@@ -465,7 +459,71 @@ $('view').addEventListener('click', (e) => {
     }
   }
   refresh();
+}
+
+/* ================= Зум пальцами ================= */
+const V = { s: 1, tx: 0, ty: 0, bw: 0, bh: 0 }; // масштаб, сдвиг, базовый размер фото на экране
+const pts = new Map();
+let g = null; // текущий жест
+
+function applyView(redraw) {
+  const st = $('stage');
+  const W = V.bw * V.s, H = V.bh * V.s;
+  // фото не уезжает за край: если меньше экрана — по центру
+  V.tx = W <= st.clientWidth ? (st.clientWidth - W) / 2 : Math.min(0, Math.max(st.clientWidth - W, V.tx));
+  V.ty = H <= st.clientHeight ? (st.clientHeight - H) / 2 : Math.min(0, Math.max(st.clientHeight - H, V.ty));
+  $('inner').style.transform = `translate(${V.tx}px, ${V.ty}px) scale(${V.s})`;
+  if (redraw) refresh();
+}
+
+const stage = $('stage');
+const local = (e) => { const r = stage.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+stage.addEventListener('pointerdown', (e) => {
+  stage.setPointerCapture(e.pointerId);
+  pts.set(e.pointerId, local(e));
+  if (pts.size === 1) g = { tap: true, x0: e.clientX, y0: e.clientY, last: local(e) };
+  if (pts.size === 2) {
+    const [a, b] = [...pts.values()];
+    g = { tap: false, d0: Math.hypot(a.x - b.x, a.y - b.y), m0: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, s0: V.s, tx0: V.tx, ty0: V.ty, pinch: true };
+  }
 });
+stage.addEventListener('pointermove', (e) => {
+  if (!pts.has(e.pointerId) || !g) return;
+  pts.set(e.pointerId, local(e));
+  if (pts.size >= 2 && g.pinch) {
+    const [a, b] = [...pts.values()];
+    const d = Math.hypot(a.x - b.x, a.y - b.y), m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const ns = Math.min(6, Math.max(1, g.s0 * d / g.d0));
+    const cx = (g.m0.x - g.tx0) / g.s0, cy = (g.m0.y - g.ty0) / g.s0; // точка фото под пальцами
+    V.s = ns; V.tx = m.x - cx * ns; V.ty = m.y - cy * ns;
+    applyView(false);
+  } else if (pts.size === 1) {
+    if (Math.hypot(e.clientX - g.x0, e.clientY - g.y0) > 8) g.tap = false;
+    const p = local(e);
+    if (!g.tap && V.s > 1) { V.tx += p.x - g.last.x; V.ty += p.y - g.last.y; applyView(false); }
+    g.last = p;
+  }
+});
+function endPointer(e) {
+  if (!pts.has(e.pointerId)) return;
+  pts.delete(e.pointerId);
+  if (pts.size === 1 && g) { g.pinch = false; g.tap = false; g.last = [...pts.values()][0]; }
+  if (pts.size === 0 && g) {
+    if (g.tap && e.type === 'pointerup') onTap(e.clientX, e.clientY);
+    else refresh(); // перерисовать тонкими линиями под новый масштаб
+    g = null;
+  }
+}
+stage.addEventListener('pointerup', endPointer);
+stage.addEventListener('pointercancel', endPointer);
+stage.addEventListener('dblclick', () => { V.s = 1; applyView(true); });
+// колесо мыши / трекпад на компьютере
+stage.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const p = local(e), ns = Math.min(6, Math.max(1, V.s * Math.exp(-e.deltaY * 0.002)));
+  V.tx = p.x - (p.x - V.tx) * ns / V.s; V.ty = p.y - (p.y - V.ty) * ns / V.s; V.s = ns;
+  applyView(true);
+}, { passive: false });
 
 $('undo').onclick = () => { if (!history.length) return; holds = JSON.parse(history.pop()); if (!holds.length) refColor = null; refresh(); };
 
@@ -487,13 +545,12 @@ document.querySelectorAll('.tool').forEach((b) => { b.onclick = () => { tool = b
 function syncTools() {
   document.querySelectorAll('.tool').forEach((b) => b.classList.toggle('on', b.dataset.t === tool));
   $('hint').textContent = {
-    hold: 'Тап — добавить зацепку, повторный тап — убрать',
+    hold: 'Тап — зацепка, ещё тап — убрать. Два пальца — зум',
     start: 'Тапните по стартовым зацепкам',
     top: 'Тапните по финишной зацепке',
   }[tool];
 }
 
-$('zoom').onclick = () => { zoom = zoom === 1 ? 2 : 1; $('zoom').classList.toggle('on', zoom > 1); layout(); };
 let closeArm = 0;
 $('close').onclick = () => {
   if (holds.length && Date.now() - closeArm > 2500) { closeArm = Date.now(); return toast('Нажмите ещё раз, чтобы сбросить'); }
@@ -504,12 +561,13 @@ window.addEventListener('resize', () => { if ($('s-edit').classList.contains('on
 function layout() {
   const st = $('stage'), inner = $('inner'), cv = $('view');
   const fit = Math.min(st.clientWidth / img.naturalWidth, st.clientHeight / img.naturalHeight);
-  const w = img.naturalWidth * fit * zoom, h = img.naturalHeight * fit * zoom;
-  inner.style.width = w + 'px'; inner.style.height = h + 'px';
-  inner.style.marginTop = Math.max(0, (st.clientHeight - h) / 2) + 'px';
-  const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
-  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
-  draw(cv.getContext('2d'), cv.width, cv.height, false);
+  V.bw = img.naturalWidth * fit; V.bh = img.naturalHeight * fit;
+  inner.style.width = V.bw + 'px'; inner.style.height = V.bh + 'px';
+  // холст с запасом по разрешению, чтобы при зуме оставалось чётко
+  const k = Math.min(4096 / Math.max(V.bw, V.bh), (window.devicePixelRatio || 1) * 3);
+  cv.width = Math.round(V.bw * k); cv.height = Math.round(V.bh * k);
+  V.s = 1; applyView(false);
+  refresh();
 }
 
 function refresh() {
@@ -532,7 +590,7 @@ function draw(ctx, W, H, final) {
   ctx.clearRect(0, 0, W, H);
   ctx.drawImage(img, 0, 0, W, H);
   if (!holds.length) return;
-  const u = Math.max(W, H) / 1000; // единица толщины
+  const u = Math.max(W, H) / 1000 / (final ? 1 : V.s); // единица толщины (тоньше при зуме)
 
   // затемняем всё, кроме зацепок трассы
   const o = document.createElement('canvas'); o.width = W; o.height = H;
@@ -551,7 +609,7 @@ function draw(ctx, W, H, final) {
     ctx.lineWidth = u * 3.6; ctx.strokeStyle = c; ctx.stroke();
   }
   // подписи СТАРТ / ТОП
-  const fs = Math.max(W, H) * 0.019;
+  const fs = Math.max(W, H) * 0.019 / (final ? 1 : Math.sqrt(V.s));
   ctx.font = `800 ${fs}px Manrope, system-ui, sans-serif`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   for (const hd of holds) {
